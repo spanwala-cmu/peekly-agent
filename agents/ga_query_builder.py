@@ -1,12 +1,12 @@
 import json
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from openai import OpenAI
 
 class GAQueryBuilderAgent:
     """
     Google Analytics Query Builder Agent that converts natural language queries
-    into valid Google Analytics 4 API query structures.
+    into valid Google Analytics 4 API query structures with metric validation.
     """
     
     def __init__(
@@ -24,6 +24,78 @@ class GAQueryBuilderAgent:
         self.agent_endpoint = agent_endpoint
         self.agent_key = agent_key
         
+        # Define valid GA4 metrics and dimensions
+        self.valid_metrics = [
+            # User metrics
+            "activeUsers", "newUsers", "totalUsers", 
+            
+            # Session metrics
+            "sessions", "sessionsPerUser", "engagedSessions", 
+            
+            # Engagement metrics
+            "engagementRate", "userEngagementDuration", "averageSessionDuration",
+            
+            # Event metrics
+            "eventCount", "eventCountPerUser", "eventValue",
+            
+            # Conversion metrics
+            "conversions", "transactions", "purchaseRevenue", "transactionsPerPurchaser",
+            "purchaseRevenuePerUser", "purchaseRevenuePerPurchaser", "averagePurchaseRevenue",
+            
+            # Ecommerce metrics
+            "cartToViewRate", "checkoutToViewRate", "purchaseToViewRate",
+            "totalRevenue", "revenuePerUser", 
+            
+            # Page/screen metrics
+            "screenPageViews", "screenPageViewsPerSession", "pageViewsPerSession",
+            "averageScreenPageViewDuration", "bounceRate",
+            
+            # Ad metrics
+            "impressions", "adClicks", "adCost", "ctr", "costPerClick",
+            
+            # Custom metrics
+            "customEvent:*"
+        ]
+        
+        self.valid_dimensions = [
+            # Time dimensions
+            "date", "dateHour", "dateHourMinute", "day", "dayOfWeek", "month", "monthYear", "week", "year",
+            
+            # User dimensions
+            "deviceCategory", "operatingSystem", "browser", "platform", "country", "region", "city", 
+            "language", "newVsReturning", "userAgeBracket", "userGender",
+            
+            # Session dimensions
+            "sessionDefaultChannelGroup", "sessionMedium", "sessionSource", "sessionSourceMedium",
+            "sessionCampaignName", "sessionGoogleAdsAccountName", "sessionManualAdContent",
+            
+            # Event dimensions
+            "eventName", "customEvent", "unifiedScreenName", "pagePath", "pagePathPlusQueryString",
+            "pageTitle", "pageReferrer", "hostName",
+            
+            # Ecommerce dimensions
+            "itemName", "itemBrand", "itemCategory", "itemCategory2", "itemId", "transactionId",
+            "promotionName", "promotionId", "productId", "productName", "productCategory",
+            
+            # Custom dimensions
+            "customUser:*", "customSession:*", "customEvent:*"
+        ]
+        
+        # Mapping for common metric name errors and their corrections
+        self.metric_mapping = {
+            "conversionRate": "conversions",
+            "avgSessionDuration": "averageSessionDuration",
+            "purchaseRate": "purchaseToViewRate",
+            "revenue": "totalRevenue",
+            "avgPurchaseRevenue": "averagePurchaseRevenue",
+            "purchases": "transactions",
+            "users": "activeUsers",
+            "avgScreenViews": "screenPageViewsPerSession",
+            "pageviews": "screenPageViews",
+            "bounce_rate": "bounceRate",
+            "conversion_rate": "conversions"
+        }
+        
         # System prompt template for the LLM
         self.system_prompt = """
         You are a Google Analytics query builder.
@@ -38,6 +110,23 @@ class GAQueryBuilderAgent:
         6. For date ranges, end_date MUST be one of: YYYY-MM-DD format, NdaysAgo, yesterday, or today
         7. ALWAYS include at least one dimension in your query (use "date" if no specific dimension is mentioned)
         8. Never use "lastMonth" or other date formats not explicitly listed above
+
+        Use only these valid GA4 metrics (stick to these exact names):
+        - activeUsers, newUsers, totalUsers 
+        - sessions, sessionsPerUser, engagedSessions
+        - engagementRate, userEngagementDuration, averageSessionDuration
+        - eventCount, eventCountPerUser, eventValue
+        - conversions, transactions (for purchases), purchaseRevenue
+        - totalRevenue, revenuePerUser
+        - screenPageViews, screenPageViewsPerSession
+        - bounceRate
+
+        Use these valid GA4 dimensions:
+        - date, day, dayOfWeek, month, week, year
+        - deviceCategory, operatingSystem, browser, country, region, city
+        - sessionDefaultChannelGroup, sessionMedium, sessionSource, sessionSourceMedium
+        - eventName, pagePath, pageTitle, pageReferrer
+        - itemName, itemId, transactionId
 
         Sample json structure: 
         {
@@ -68,6 +157,7 @@ class GAQueryBuilderAgent:
             
         Return ONLY a valid JSON object with the GA4 query structure. Do not include any explanations or text before or after the JSON.
         Remember that every GA4 query MUST include at least one dimension - if none is specified, use {"name": "date"} as the default dimension.
+        Do NOT use "conversionRate" - use "conversions" instead to measure conversions.
         """
     
     def get_openai_client(self):
@@ -109,6 +199,59 @@ class GAQueryBuilderAgent:
         # If we couldn't find a JSON object, raise an error
         raise ValueError(f"No JSON object found in response: {text}")
     
+    def validate_metrics(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate and correct metrics in the query.
+        
+        Args:
+            query_data: The GA4 query structure
+            
+        Returns:
+            Corrected GA4 query structure
+        """
+        if "metrics" in query_data:
+            for i, metric in enumerate(query_data["metrics"]):
+                if "name" in metric:
+                    metric_name = metric["name"]
+                    
+                    # Check if the metric needs correction
+                    if metric_name in self.metric_mapping:
+                        print(f"Correcting metric: '{metric_name}' to '{self.metric_mapping[metric_name]}'")
+                        query_data["metrics"][i]["name"] = self.metric_mapping[metric_name]
+                    # Check if the metric is valid
+                    elif metric_name not in self.valid_metrics and not any(
+                        metric_name.startswith(custom) for custom in ["customEvent:"]
+                    ):
+                        print(f"Warning: Metric '{metric_name}' might not be valid in GA4")
+        
+        return query_data
+    
+    def validate_dimensions(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate dimensions in the query and ensure at least one dimension exists.
+        
+        Args:
+            query_data: The GA4 query structure
+            
+        Returns:
+            Corrected GA4 query structure
+        """
+        # Ensure dimensions exist and add date dimension if missing
+        if "dimensions" not in query_data or not query_data["dimensions"]:
+            print("Adding default 'date' dimension")
+            query_data["dimensions"] = [{"name": "date"}]
+        
+        # Validate existing dimensions
+        for i, dimension in enumerate(query_data["dimensions"]):
+            if "name" in dimension:
+                dim_name = dimension["name"]
+                if dim_name not in self.valid_dimensions and not any(
+                    dim_name.startswith(custom) for custom in ["customUser:", "customSession:", "customEvent:"]
+                ):
+                    print(f"Warning: Dimension '{dim_name}' might not be valid in GA4")
+        
+        return query_data
+    
     def build_query(self, query: str) -> Dict[str, Any]:
         """
         Build a Google Analytics 4 query from a natural language query.
@@ -139,4 +282,12 @@ class GAQueryBuilderAgent:
         content = response.choices[0].message.content
         
         # Extract JSON from the content
-        return self.extract_json_from_text(content)
+        query_data = self.extract_json_from_text(content)
+        
+        # Validate and correct metrics and dimensions
+        query_data = self.validate_metrics(query_data)
+        query_data = self.validate_dimensions(query_data)
+        
+        print("GA4 Query after validation:", json.dumps(query_data, indent=2))
+        
+        return query_data
