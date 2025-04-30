@@ -74,6 +74,65 @@ def load_environment():
         if key not in os.environ:
             os.environ[key] = value
 
+def get_ga_credentials():
+    """Get Google Analytics credentials from environment variable."""
+    try:
+        from google.oauth2 import service_account
+        import json
+        import os
+        import tempfile
+        
+        try:
+            # First attempt to parse as a regular JSON string
+            try:
+                info = json.loads(os.environ["SERVICE_ACCOUNT_KEY"])
+            except json.JSONDecodeError as e:
+                print(f"Error parsing SERVICE_ACCOUNT_KEY as JSON: {e}")
+                # If that fails, try to clean the string and parse it
+                # This helps with environment variables that might have escaped quotes
+                service_account_str = os.environ["SERVICE_ACCOUNT_KEY"]
+                
+                # If the string is wrapped with quotes, remove them
+                if (service_account_str.startswith('"') and service_account_str.endswith('"')) or \
+                   (service_account_str.startswith("'") and service_account_str.endswith("'")):
+                    service_account_str = service_account_str[1:-1]
+                
+                # Replace escaped newlines with actual newlines if needed
+                service_account_str = service_account_str.replace('\\n', '\n')
+                
+                # Try to parse the cleaned string
+                try:
+                    info = json.loads(service_account_str)
+                except json.JSONDecodeError:
+                    # If all else fails, write to a temporary file and load from there
+                    print("Attempting to load credentials from a temporary file")
+                    with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp:
+                        temp.write(service_account_str)
+                        temp_path = temp.name
+                    
+                    # Load credentials from the temporary file
+                    credentials = service_account.Credentials.from_service_account_file(
+                        temp_path,
+                        scopes=["https://www.googleapis.com/auth/analytics.readonly"],
+                    )
+                    # Clean up
+                    os.unlink(temp_path)
+                    # Skip the from_service_account_info call
+                    return credentials
+            
+            # If parsing succeeded, use the info dict
+            credentials = service_account.Credentials.from_service_account_info(
+                info,
+                scopes=["https://www.googleapis.com/auth/analytics.readonly"],
+            )
+            return credentials
+        except Exception as e:
+            print(f"Error authenticating with Google: {str(e)}")
+            raise
+    except Exception as e:
+        print(f"Error creating GA credentials: {str(e)}")
+        raise
+
 # Load environment variables
 load_environment()
 
