@@ -36,38 +36,7 @@ def load_environment():
         from dotenv import load_dotenv
         env_path = os.path.join(base_dir, '.env')
         if os.path.exists(env_path):
-            # Load the .env file manually to handle the SERVICE_ACCOUNT_KEY properly
-            with open(env_path, 'r') as env_file:
-                for line in env_file:
-                    if line.strip() and not line.startswith('#'):
-                        if '=' in line:
-                            key, value = line.split('=', 1)
-                            key = key.strip()
-                            value = value.strip()
-                            
-                            # Special handling for SERVICE_ACCOUNT_KEY
-                            if key == 'SERVICE_ACCOUNT_KEY':
-                                # Extract just the JSON part by finding the first '{' and the last '}'
-                                if '{' in value and '}' in value:
-                                    start_idx = value.find('{')
-                                    end_idx = value.rfind('}') + 1
-                                    json_value = value[start_idx:end_idx]
-                                    
-                                    # Validate the JSON
-                                    try:
-                                        json.loads(json_value)
-                                        os.environ[key] = json_value
-                                        print(f"Successfully loaded and validated SERVICE_ACCOUNT_KEY JSON")
-                                    except json.JSONDecodeError as e:
-                                        print(f"Invalid JSON in SERVICE_ACCOUNT_KEY: {e}")
-                                        # Fall back to the raw value
-                                        os.environ[key] = value
-                                else:
-                                    os.environ[key] = value
-                            else:
-                                # For other variables, just set them normally
-                                os.environ[key] = value
-            
+            load_dotenv(env_path)
             print(f"Loaded environment variables from {env_path}")
         else:
             print("No .env file found, using system environment variables or defaults")
@@ -83,7 +52,16 @@ def load_environment():
     
     # Required environment variables (these should be set in production)
     required_vars = [
-        "SERVICE_ACCOUNT_KEY",
+        "GA_TYPE",
+        "GA_PROJECT_ID",
+        "GA_PRIVATE_KEY_ID",
+        "GA_PRIVATE_KEY",
+        "GA_CLIENT_EMAIL",
+        "GA_CLIENT_ID",
+        "GA_AUTH_URI",
+        "GA_TOKEN_URI",
+        "GA_AUTH_PROVIDER_X509_CERT_URL",
+        "GA_CLIENT_X509_CERT_URL",
         "PROPERTY_ID",
         "SHOPIFY_API_VERSION",
         "SHOPIFY_STORE_DOMAIN",
@@ -112,7 +90,7 @@ def load_environment():
 load_environment()
 
 # Get configuration from environment
-SERVICE_ACCOUNT_KEY = os.environ.get("SERVICE_ACCOUNT_KEY")
+# Instead of SERVICE_ACCOUNT_KEY, we're using separate GA credential variables
 PROPERTY_ID = os.environ.get("PROPERTY_ID")
 SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION")
 SHOPIFY_STORE_DOMAIN = os.environ.get("SHOPIFY_STORE_DOMAIN")
@@ -174,57 +152,82 @@ synthesizer = SynthesizerAgent(
 )
 
 def get_ga_credentials():
-    """Get Google Analytics credentials from environment variable."""
+    """Get Google Analytics credentials from separate environment variables."""
     try:
         from google.oauth2 import service_account
         import json
         import os
-        import tempfile
         
-        # Get the SERVICE_ACCOUNT_KEY from environment
-        service_account_key = os.environ.get("SERVICE_ACCOUNT_KEY", "")
-        print(f"Service account key first 50 chars: {service_account_key[:50]}...")
+        # Get the GA credential components from environment variables
+        ga_type = os.environ.get("GA_TYPE")
+        ga_project_id = os.environ.get("GA_PROJECT_ID")
+        ga_private_key_id = os.environ.get("GA_PRIVATE_KEY_ID")
+        ga_private_key = os.environ.get("GA_PRIVATE_KEY")
+        ga_client_email = os.environ.get("GA_CLIENT_EMAIL")
+        ga_client_id = os.environ.get("GA_CLIENT_ID")
+        ga_auth_uri = os.environ.get("GA_AUTH_URI")
+        ga_token_uri = os.environ.get("GA_TOKEN_URI")
+        ga_auth_provider_cert_url = os.environ.get("GA_AUTH_PROVIDER_X509_CERT_URL")
+        ga_client_cert_url = os.environ.get("GA_CLIENT_X509_CERT_URL")
+        ga_universe_domain = os.environ.get("GA_UNIVERSE_DOMAIN")
         
-        # Try parsing the JSON directly
-        try:
-            service_account_info = json.loads(service_account_key)
-            print("Successfully parsed SERVICE_ACCOUNT_KEY as JSON")
-            
-            credentials = service_account.Credentials.from_service_account_info(
-                service_account_info,
-                scopes=["https://www.googleapis.com/auth/analytics.readonly"]
-            )
-            return credentials
-            
-        except json.JSONDecodeError as e:
-            print(f"Error parsing SERVICE_ACCOUNT_KEY as JSON: {e}")
-            
-            # Write the key to a temporary file and load it from there
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp:
-                temp.write(service_account_key)
-                temp_path = temp.name
-                
-            try:
-                print(f"Loading credentials from temporary file: {temp_path}")
-                credentials = service_account.Credentials.from_service_account_file(
-                    temp_path,
-                    scopes=["https://www.googleapis.com/auth/analytics.readonly"]
-                )
-                # Clean up
-                os.unlink(temp_path)
-                return credentials
-            except Exception as file_error:
-                print(f"Error loading credentials from file: {file_error}")
-                # Clean up even on error
-                os.unlink(temp_path)
-                raise
+        # Check if all necessary components are present
+        required_vars = [
+            ga_type, ga_project_id, ga_private_key_id, ga_private_key, 
+            ga_client_email, ga_client_id, ga_auth_uri, ga_token_uri, 
+            ga_auth_provider_cert_url, ga_client_cert_url
+        ]
+        
+        if not all(required_vars):
+            missing_vars = [
+                var for var, val in {
+                    "GA_TYPE": ga_type,
+                    "GA_PROJECT_ID": ga_project_id,
+                    "GA_PRIVATE_KEY_ID": ga_private_key_id,
+                    "GA_PRIVATE_KEY": ga_private_key,
+                    "GA_CLIENT_EMAIL": ga_client_email,
+                    "GA_CLIENT_ID": ga_client_id,
+                    "GA_AUTH_URI": ga_auth_uri,
+                    "GA_TOKEN_URI": ga_token_uri,
+                    "GA_AUTH_PROVIDER_X509_CERT_URL": ga_auth_provider_cert_url,
+                    "GA_CLIENT_X509_CERT_URL": ga_client_cert_url
+                }.items() if not val
+            ]
+            raise ValueError(f"Missing required Google Analytics credential variables: {', '.join(missing_vars)}")
+        
+        # Construct the service account info dictionary
+        service_account_info = {
+            "type": ga_type,
+            "project_id": ga_project_id,
+            "private_key_id": ga_private_key_id,
+            "private_key": ga_private_key,
+            "client_email": ga_client_email,
+            "client_id": ga_client_id,
+            "auth_uri": ga_auth_uri,
+            "token_uri": ga_token_uri,
+            "auth_provider_x509_cert_url": ga_auth_provider_cert_url,
+            "client_x509_cert_url": ga_client_cert_url
+        }
+        
+        # Add universe_domain if provided
+        if ga_universe_domain:
+            service_account_info["universe_domain"] = ga_universe_domain
+        
+        print("Successfully constructed service account info from environment variables")
+        
+        # Create credentials from the constructed service account info
+        credentials = service_account.Credentials.from_service_account_info(
+            service_account_info,
+            scopes=["https://www.googleapis.com/auth/analytics.readonly"]
+        )
+        return credentials
     
     except Exception as e:
         print(f"Error in get_ga_credentials: {e}")
         raise
 
 # Utility function to fetch GA4 data
-def fetch_ga4_data(service_account_key_path, property_id, query_json):
+def fetch_ga4_data(query_json):
     """Fetch Google Analytics 4 data based on a JSON query."""
     try:
         from google.analytics.data_v1beta import BetaAnalyticsDataClient
@@ -264,7 +267,7 @@ def fetch_ga4_data(service_account_key_path, property_id, query_json):
 
         # Construct the API request
         request = RunReportRequest(
-            property=property_id,
+            property=PROPERTY_ID,
             date_ranges=date_ranges,
             dimensions=dimensions,
             metrics=metrics,
@@ -443,7 +446,7 @@ def process_ga(state: AnalyticsState) -> AnalyticsState:
                     ga_query["metrics"][i]["name"] = "transactions"
         
         print("\nFetching data from Google Analytics...")
-        ga_data = fetch_ga4_data(SERVICE_ACCOUNT_KEY, PROPERTY_ID, ga_query)
+        ga_data = fetch_ga4_data(ga_query)
         
         print(f"Retrieved {len(ga_data)} rows of GA data")
         print(ga_data)
