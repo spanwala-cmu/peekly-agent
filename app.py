@@ -225,8 +225,10 @@ def fetch_shopify_data(api_request):
             method=api_request["method"],
             url=api_request["url"],
             headers=api_request["headers"],
-            params=api_request["params"]
+            params=api_request["params"],
+            verify=False                  # <-- disable SSL cert verification :contentReference[oaicite:0]{index=0}
         )
+        response.raise_for_status()
         response.raise_for_status()  # Raise an exception for 4XX/5XX responses
         
         # Convert response to a usable format
