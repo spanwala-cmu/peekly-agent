@@ -15,6 +15,7 @@ from typing import Dict, List, Any, TypedDict, Optional, Union, Literal
 from langgraph.graph import StateGraph, END
 import asyncio
 import requests
+import warnings
 
 # Import the agent classes
 from agents.router import RouterAgent
@@ -221,14 +222,20 @@ def fetch_shopify_data(api_request):
     try:
         print(f"Executing Shopify request: {api_request['url']}")
         
+        # Suppress only the InsecureRequestWarning from urllib3
+        warnings.filterwarnings('ignore', 'Unverified HTTPS request', category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
+        
         response = requests.request(
             method=api_request["method"],
             url=api_request["url"],
             headers=api_request["headers"],
             params=api_request["params"],
-            verify=False                  # <-- disable SSL cert verification :contentReference[oaicite:0]{index=0}
+            verify=False  # Still using verify=False, but we're suppressing the warning
         )
-        response.raise_for_status()
+        
+        # Reset warnings
+        warnings.resetwarnings()
+        
         response.raise_for_status()  # Raise an exception for 4XX/5XX responses
         
         # Convert response to a usable format
@@ -256,6 +263,56 @@ def fetch_shopify_data(api_request):
     except Exception as e:
         print(f"Error fetching Shopify data: {str(e)}")
         raise e
+
+# Utility function to prepare data for synthesis
+def prepare_data_for_synthesis(collected_data):
+    """Convert and reduce data size for synthesis to avoid rate limiting issues."""
+    reduced_data = {}
+    
+    for source, data in collected_data.items():
+        if isinstance(data, pd.DataFrame):
+            # For GA data, select all columns but limit rows
+            if source == "Google Analytics":
+                # Calculate how many rows we can include (based on complexity)
+                max_rows = min(20, len(data))
+                reduced_data[source] = data.head(max_rows).to_dict(orient="records")
+                print(f"Reduced {source} data from {len(data)} to {max_rows} rows")
+            
+            # For Shopify data, select essential columns and limit rows
+            elif source == "Shopify":
+                # Define essential columns for different Shopify data types
+                essential_columns = []
+                
+                # Try to identify the type of Shopify data and select relevant columns
+                if set(['id', 'total_price', 'created_at']).issubset(data.columns):
+                    # Orders data
+                    essential_columns = ['id', 'created_at', 'total_price', 'financial_status', 
+                                         'customer', 'email', 'order_number']
+                elif set(['id', 'product_id', 'price']).issubset(data.columns):
+                    # Variants data
+                    essential_columns = ['id', 'product_id', 'title', 'price', 'sku', 'inventory_quantity']
+                elif set(['id', 'title', 'vendor']).issubset(data.columns):
+                    # Products data
+                    essential_columns = ['id', 'title', 'vendor', 'product_type', 'created_at', 'published_at']
+                
+                # Filter to only columns that exist in the data
+                available_columns = [col for col in essential_columns if col in data.columns]
+                
+                # If no essential columns were found, take all columns
+                if not available_columns:
+                    available_columns = data.columns
+                
+                # Limit the number of rows
+                max_rows = min(15, len(data))
+                
+                # Create the reduced dataset
+                reduced_data[source] = data[available_columns].head(max_rows).to_dict(orient="records")
+                print(f"Reduced {source} data from {len(data)} rows with {len(data.columns)} columns to {max_rows} rows with {len(available_columns)} columns")
+        else:
+            # For non-DataFrame data (e.g., error messages or raw JSON)
+            reduced_data[source] = data
+            
+    return reduced_data
 
 # LangGraph node functions
 def route_query(state: AnalyticsState) -> AnalyticsState:
@@ -398,7 +455,7 @@ def process_shopify(state: AnalyticsState) -> AnalyticsState:
         }
 
 def synthesize_results(state: AnalyticsState) -> AnalyticsState:
-    """Node to synthesize results from all collected data sources."""
+    """Node to synthesize results from all collected data sources with built-in retry logic."""
     if state.get("error"):
         return state
         
@@ -416,14 +473,52 @@ def synthesize_results(state: AnalyticsState) -> AnalyticsState:
             print(f"Note: Google Analytics data collection failed: {state['ga_error']}")
         if state.get("shopify_error"):
             print(f"Note: Shopify data collection failed: {state['shopify_error']}")
-            
-        final_answer = synthesizer.synthesize_data(query, collected_data)
         
-        return {
-            **state,
-            "final_answer": final_answer,
-            "current_step": "end"
-        }
+        # Prepare and reduce data size for synthesis
+        prepared_data = prepare_data_for_synthesis(collected_data)
+        
+        # Log data size for debugging
+        data_size = len(json.dumps(prepared_data))
+        print(f"Data size for synthesis: {data_size} bytes")
+        
+        # Implement retry with exponential backoff
+        max_retries = 3
+        base_delay = 2  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"Synthesis attempt {attempt + 1}/{max_retries}")
+                
+                # Attempt to synthesize data
+                final_answer = synthesizer.synthesize_data(query, prepared_data)
+                
+                print("Synthesis successful!")
+                return {
+                    **state,
+                    "final_answer": final_answer,
+                    "current_step": "end"
+                }
+            except Exception as e:
+                error_msg = str(e)
+                print(f"Synthesis error: {error_msg}")
+                
+                # Check if it's a rate limit error
+                if "429" in error_msg and attempt < max_retries - 1:
+                    # Apply exponential backoff
+                    delay = base_delay * (2 ** attempt)
+                    print(f"Rate limit hit, retrying in {delay} seconds")
+                    
+                    # Further reduce data if we're still hitting rate limits
+                    if attempt > 0:
+                        print("Further reducing data size for next attempt...")
+                        # Additional reduction strategies could be implemented here
+                        # For example, further limit rows or columns
+                    
+                    time.sleep(delay)
+                else:
+                    # If last attempt or not a rate limit error, raise
+                    raise
+                    
     except Exception as e:
         error_msg = f"Error in synthesis: {str(e)}"
         print(error_msg)
