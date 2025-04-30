@@ -150,8 +150,9 @@ def fetch_ga4_data(service_account_key_path, property_id, query_json):
         from google.oauth2 import service_account
         
         # Authenticate using the service account
-        credentials = service_account.Credentials.from_service_account_file(
-            service_account_key_path,
+        info = json.loads(os.environ["SERVICE_ACCOUNT_KEY"])
+        credentials = service_account.Credentials.from_service_account_info(
+            info,
             scopes=["https://www.googleapis.com/auth/analytics.readonly"],
         )
 
