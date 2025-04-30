@@ -1,8 +1,7 @@
 import json
 import re
-import time
 from typing import Dict, Any, Optional, Union, List
-from openai import OpenAI, APIError, RateLimitError
+from openai import OpenAI
 import pandas as pd
 from utils.calculator import CalculationHelper
 
@@ -111,7 +110,6 @@ IMPORTANT FORMATTING INSTRUCTIONS:
     def synthesize_data(self, query: str, data_sources: Dict[str, Any]) -> str:
         """
         Synthesize data from multiple sources to answer the user's query.
-        Includes retry logic for handling rate limit errors.
         
         Args:
             query: The original natural language query
@@ -210,129 +208,15 @@ IMPORTANT FORMATTING INSTRUCTIONS:
             }
         ]
         
-        # Implement retry logic with exponential backoff
-        max_retries = 5
-        base_delay = 2  # Start with 2 seconds
-        for attempt in range(max_retries):
-            try:
-                # Call the GenAI API
-                print(f"Attempt {attempt+1}/{max_retries} to call the GenAI API")
-                response = client.chat.completions.create(
-                    model="n/a",  # Model is determined by the Digital Ocean GenAI Platform
-                    messages=messages,
-                    temperature=0.3,  # Lower temperature for more factual responses
-                )
-                
-                # If successful, return the response content
-                return response.choices[0].message.content
-                
-            except RateLimitError as e:
-                # Specific handling for rate limit errors
-                retry_delay = base_delay * (2 ** attempt)  # Exponential backoff
-                
-                print(f"Rate limit error (429) encountered. Waiting {retry_delay} seconds before retry...")
-                
-                # If this is the last attempt, generate a simplified fallback response
-                if attempt == max_retries - 1:
-                    print(f"Max retries reached for GenAI API. Returning simplified response.")
-                    return self._generate_fallback_response(query, data_sources)
-                
-                # Wait before retrying
-                time.sleep(retry_delay)
-                
-            except APIError as e:
-                # Handle other API errors
-                status_code = getattr(e, "status_code", None)
-                if status_code == 429:  # Another way to detect rate limiting
-                    retry_delay = base_delay * (2 ** attempt)
-                    print(f"Rate limit error (429) encountered. Waiting {retry_delay} seconds before retry...")
-                    
-                    if attempt == max_retries - 1:
-                        return self._generate_fallback_response(query, data_sources)
-                    
-                    time.sleep(retry_delay)
-                else:
-                    # Log other API errors and return a generic error message
-                    print(f"API Error: {str(e)}")
-                    return f"I encountered an error while analyzing your data: {str(e)}. Please try again later."
-            
-            except Exception as e:
-                # Catch-all for other exceptions
-                print(f"Unexpected error in synthesize_data: {str(e)}")
-                return f"I encountered an unexpected error while analyzing your data. Please try again later."
+        # Call the GenAI API
+        response = client.chat.completions.create(
+            model="n/a",  # Model is determined by the Digital Ocean GenAI Platform
+            messages=messages,
+            temperature=0.3,  # Lower temperature for more factual responses
+        )
         
-        # This should only be reached if all retries fail but weren't caught in the exception handling
-        return self._generate_fallback_response(query, data_sources)
-    
-    def _generate_fallback_response(self, query: str, data_sources: Dict[str, Any]) -> str:
-        """
-        Generate a simplified fallback response when the GenAI API is unavailable.
-        
-        Args:
-            query: The original user query
-            data_sources: The data sources available
-            
-        Returns:
-            A simple response based on basic data analysis
-        """
-        try:
-            response = "I'm experiencing high traffic at the moment and can't provide a detailed analysis. "
-            query_lower = query.lower()
-            
-            # Handle Shopify order count query
-            if "shopify" in query_lower and ("order" in query_lower or "orders" in query_lower):
-                if "Shopify" in data_sources:
-                    shopify_data = data_sources["Shopify"]
-                    if isinstance(shopify_data, pd.DataFrame):
-                        order_count = len(shopify_data)
-                        date_range = "the specified period"
-                        
-                        # Try to determine date range
-                        if "created_at" in shopify_data.columns:
-                            try:
-                                min_date = pd.to_datetime(shopify_data["created_at"].min()).strftime("%Y-%m-%d")
-                                max_date = pd.to_datetime(shopify_data["created_at"].max()).strftime("%Y-%m-%d")
-                                date_range = f"{min_date} to {max_date}"
-                            except:
-                                pass
-                        
-                        response += f"Based on the data, there were {order_count} orders from Shopify during {date_range}."
-                    else:
-                        response += "The data shows Shopify orders were collected, but I can't process the details right now."
-                else:
-                    response += "I don't have Shopify data available to answer your query."
-            
-            # Handle Google Analytics user query
-            elif "user" in query_lower or "visitor" in query_lower:
-                if "Google Analytics" in data_sources:
-                    ga_data = data_sources["Google Analytics"]
-                    if isinstance(ga_data, pd.DataFrame):
-                        if "active_users" in ga_data.columns:
-                            total_users = ga_data["active_users"].sum()
-                            response += f"Based on the data, there were approximately {total_users} active user sessions in the time period."
-                        elif "sessions" in ga_data.columns:
-                            total_sessions = ga_data["sessions"].sum()
-                            response += f"Based on the data, there were approximately {total_sessions} sessions in the time period."
-                    else:
-                        response += "Google Analytics data is available, but I can't process the details right now."
-                else:
-                    response += "I don't have Google Analytics data available to answer your user query."
-            
-            # Generic fallback
-            else:
-                data_source_names = list(data_sources.keys())
-                if data_source_names:
-                    response += f"I have data from {', '.join(data_source_names)}, but can't provide detailed analysis at the moment."
-                else:
-                    response += "I don't have sufficient data to answer your query at this time."
-            
-            response += " Please try again in a few minutes for a more detailed analysis."
-            return response
-            
-        except Exception as e:
-            # Last resort fallback
-            print(f"Error in fallback response generation: {str(e)}")
-            return "I'm experiencing technical difficulties processing your analytics query. Please try again later."
+        # Extract the content from the response
+        return response.choices[0].message.content
     
     def _perform_calculations(self, query: str, data_sources: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """
@@ -506,4 +390,3 @@ IMPORTANT FORMATTING INSTRUCTIONS:
                 print(f"Error calculating percentage changes: {e}")
         
         return results
-    
