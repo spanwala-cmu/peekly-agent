@@ -225,7 +225,8 @@ def fetch_shopify_data(api_request):
             method=api_request["method"],
             url=api_request["url"],
             headers=api_request["headers"],
-            params=api_request["params"]
+            params=api_request["params"],
+            verify=False 
         )
         response.raise_for_status()  # Raise an exception for 4XX/5XX responses
         
